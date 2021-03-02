@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<processor_spec>
+  <programcounter register="PC"/>
+       
+  <default_symbols>
+	<symbol name="VECTOR_Reset" address="0x2000" entry="true" type="code"/>
+
+  <!--	  <symbol name="ROM_TO"  address="0x200A" entry="true"  type="code_ptr"/>-->
+  <!--  <symbol name="SMP_Base_Addr"  address="0x200C" entry="true"  type="code_ptr"/>-->
+  <!--    <symbol name="Calib_Exec_Time"  address="0x200E" entry="true"  type="code_ptr"/>-->
+
+  <!--	  <symbol name="HSO_int2"       address="0x2010" entry="true"  type="code_ptr"/>-->
+
+ <!--    <symbol name="WATCHDOG"		address="0x2012" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="AD_End"			address="0x2014" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="HSI_DATA"		address="0x2016" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="EXT_INT"		address="0x2018" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="HSO_int1"		address="0x201a" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="HSI_1"			address="0x201c" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="HSI_2"			address="0x201e" entry="true" type="code_ptr"/>-->
+
+<!--      <symbol name="LEVELS"			address="0x2020" entry="false" type="code_ptr"/>-->
+<!--      <symbol name="CALIBRATION"	address="0x2021" entry="false" type="code_ptr"/>-->
+
+<!--      <symbol name="RBASE_f0"			address="0x2022" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_f2"			address="0x2024" entry="true" type="code_ptr"/>-->
+ <!--     <symbol name="RBASE_f4"			address="0x2026" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_f6"			address="0x2028" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_f8"			address="0x202a" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_fa"			address="0x202c" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_fc"			address="0x202e" entry="true" type="code_ptr"/>-->
+<!--      <symbol name="RBASE_fe"			address="0x2030" entry="true" type="code_ptr"/>-->
+
+     <!-- <symbol name="DATA_LIST"    address="0xaa98" entry="true" /> -->
+  </default_symbols>
+  <default_memory_blocks>
+    <memory_block name="SFR" start_address="RAM:0" length="0x11" initialized="false"/>
+    <memory_block name="General_Register_File" start_address="RAM:12" length="0xee" initialized="false"/>
+    <memory_block name="Working_Memory" start_address="RAM:100" length="0x1f00" initialized="false"/>
+	<!-- <memory_block name="ROM" start_address="0x2000" length="0xdfff" initialized="false"/> -->
+    <!-- <memory_block name="RAM" start_address="RAM:0000" length="0x1fff" initialized="false"/> -->
+    <!-- <memory_block name="SFR_Registers" start_address="RAM:0000" length="0x12" initialized="false"/> -->
+    <!-- <memory_block name="General_Registers" start_address="RAM:0012" length="0xee" initialized="false"/>-->
+    <!-- <memory_block name="EXTERNAL_RAM" start_address="RAM:0100" length="0x300" initialized="false"/>-->
+    <!-- <memory_block name="KAM" start_address="RAM:0a00" length="0x200" initialized="false"/>-->
+    <!-- <memory_block name="CAL_CONSOLE" start_address="RAM:0c00" length="0x0400" initialized="false"/>-->
+    <!-- <memory_block name="ENG_CONSOLE" start_address="RAM:1000" length="0x1000" initialized="false"/>-->
+  
+  </default_memory_blocks>
+
+	<volatile outputop="ioWrite" inputop="ioRead">
+	    <range space="RAM" first="0x0004" last="0x0005"/>         <!-- AD, Watchdog -->
+	    <range space="RAM" first="0x000d" last="0x000d"/>         <!-- HSI DATA HOLD, HSO COMMAND HOLD -->
+	    <range space="RAM" first="0x000e" last="0x000f"/>         <!-- HSI Time Hold, HSO Time Hold -->
+	</volatile>
+</processor_spec>

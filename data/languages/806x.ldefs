@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<language_definitions>
+  <language processor="8061"
+            endian="little"
+            size="16"
+            variant="default"
+            version="1.0"
+            slafile="806x.sla"
+            processorspec="806x.pspec"
+            manualindexfile="../manuals/806x.idx"
+            id="806x:LE:16:default">
+    <description>EEC-IV 8061 Microcontroller Family</description>
+    <compiler name="default" spec="806x.cspec" id="default"/>
+    <!--  <compiler name="8061" spec="8061.cspec" id="8061"/> -->
+  </language>
+</language_definitions>

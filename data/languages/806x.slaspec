@@ -1,0 +1,5 @@
+@define 8061 "1"
+@define 8063 "0"
+@define 8065 "0"
+
+@include "806x.sinc"
