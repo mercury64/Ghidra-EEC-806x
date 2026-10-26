@@ -1,0 +1,5 @@
+# Intel 8065 (Ford EEC-IV): up to four 64 KiB banks. Addresses are
+# bank * 0x10000 + 16-bit address.
+@define PROCESSOR "8065"
+
+@include "806x.sinc"

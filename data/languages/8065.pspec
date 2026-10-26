@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<!-- Processor specification for the 8065 language (8065:LE:24:default).
+     Addresses are bank * 0x10000 + 16-bit address; 0x00000-0x01fff (registers and RAM)
+     is shared by all banks. A loader or script must create the ROM blocks of the banks
+     (bank n at n * 0x10000 + 0x2000); see test/ghidra/EecListing.java. -->
+<processor_spec>
+  <programcounter register="PC"/>
+
+  <context_data>
+    <context_set space="RAM">
+      <!-- Data bank 1 until the code writes a constant to BANK_Select. This is SAD's
+           default for multi-bank images (SAD 4.13 Core.cpp: basepars.datbnk). After reset
+           the register is 0 and memory expansion is off; EEC-IV code writes the register
+           before it enables memory expansion. -->
+      <set name="dbank" val="1"/>
+    </context_set>
+  </context_data>
+
+  <default_symbols>
+    <!-- After reset the CPU starts at 0x2000 in bank 8. -->
+    <symbol name="VECTOR_Reset" address="RAM:0x82000" entry="true" type="code"/>
+    <!-- Interrupt vectors in bank 8: the vector of level n is the 16-bit word at
+         0x2010 + 2n, an address in the program bank (Ford EEC-IV Software Manual 6-72).
+         Names from SAD806x (SADDef.cs, IntVectors_8065). -->
+    <symbol name="VECTOR_HSO_0" address="RAM:0x82010"/>
+    <symbol name="VECTOR_HSO_1" address="RAM:0x82012"/>
+    <symbol name="VECTOR_HSO_2" address="RAM:0x82014"/>
+    <symbol name="VECTOR_HSO_3" address="RAM:0x82016"/>
+    <symbol name="VECTOR_HSO_4" address="RAM:0x82018"/>
+    <symbol name="VECTOR_HSO_5" address="RAM:0x8201a"/>
+    <symbol name="VECTOR_HSO_6" address="RAM:0x8201c"/>
+    <symbol name="VECTOR_HSO_7" address="RAM:0x8201e"/>
+    <symbol name="VECTOR_HSO_8" address="RAM:0x82020"/>
+    <symbol name="VECTOR_HSO_9" address="RAM:0x82022"/>
+    <symbol name="VECTOR_HSO_10" address="RAM:0x82024"/>
+    <symbol name="VECTOR_HSO_11" address="RAM:0x82026"/>
+    <symbol name="VECTOR_HSO_12" address="RAM:0x82028"/>
+    <symbol name="VECTOR_HSO_13" address="RAM:0x8202a"/>
+    <symbol name="VECTOR_HSO_14" address="RAM:0x8202c"/>
+    <symbol name="VECTOR_HSO_15" address="RAM:0x8202e"/>
+    <symbol name="VECTOR_HSI_FIFO" address="RAM:0x82030"/>
+    <symbol name="VECTOR_External" address="RAM:0x82032"/>
+    <symbol name="VECTOR_HSI_0" address="RAM:0x82034"/>
+    <symbol name="VECTOR_HSI_Data" address="RAM:0x82036"/>
+    <symbol name="VECTOR_HSI_1" address="RAM:0x82038"/>
+    <symbol name="VECTOR_AD_Imm_Rdy" address="RAM:0x8203a"/>
+    <symbol name="VECTOR_AD_Timed_Rdy" address="RAM:0x8203c"/>
+    <symbol name="VECTOR_ATimer_OVF" address="RAM:0x8203e"/>
+    <symbol name="VECTOR_AD_Timed_Start" address="RAM:0x82040"/>
+    <symbol name="VECTOR_ATimer_Reset" address="RAM:0x82042"/>
+    <symbol name="VECTOR_Counter_0" address="RAM:0x82044"/>
+    <symbol name="VECTOR_Counter_1" address="RAM:0x82046"/>
+    <symbol name="VECTOR_Counter_2" address="RAM:0x82048"/>
+    <symbol name="VECTOR_Counter_3" address="RAM:0x8204a"/>
+    <symbol name="VECTOR_Software_0" address="RAM:0x8204c"/>
+    <symbol name="VECTOR_Software_1" address="RAM:0x8204e"/>
+    <symbol name="VECTOR_Software_2" address="RAM:0x82050"/>
+    <symbol name="VECTOR_Software_3" address="RAM:0x82052"/>
+    <symbol name="VECTOR_Software_4" address="RAM:0x82054"/>
+    <symbol name="VECTOR_Software_5" address="RAM:0x82056"/>
+    <symbol name="VECTOR_Software_6" address="RAM:0x82058"/>
+    <symbol name="VECTOR_Software_7" address="RAM:0x8205a"/>
+    <symbol name="VECTOR_Software_8" address="RAM:0x8205c"/>
+    <symbol name="VECTOR_Software_9" address="RAM:0x8205e"/>
+  </default_symbols>
+
+  <default_memory_blocks>
+    <memory_block name="Registers" start_address="RAM:0x0000" length="0x400" initialized="false"/>
+    <memory_block name="RAM" start_address="RAM:0x0400" length="0x1c00" initialized="false"/>
+  </default_memory_blocks>
+
+  <volatile outputop="ioWrite" inputop="ioRead">
+    <!-- Special function registers that the hardware changes -->
+    <range space="RAM" first="0x0002" last="0x001f"/>
+  </volatile>
+</processor_spec>

@@ -1,0 +1,9 @@
+# Ghidra compiles each .sla file from its .slaspec file when it loads the language.
+# The .sla format changes between Ghidra versions, so the files are not kept in git.
+data/languages/*.sla
+data/languages/*.sla.lock
+# Ghidra extension build output
+build/
+dist/
+__pycache__/
+*.pyc

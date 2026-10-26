@@ -14,4 +14,16 @@
     <compiler name="default" spec="806x.cspec" id="default"/>
     <!--  <compiler name="8061" spec="8061.cspec" id="8061"/> -->
   </language>
+  <language processor="8065"
+            endian="little"
+            size="24"
+            variant="default"
+            version="1.0"
+            slafile="8065.sla"
+            processorspec="8065.pspec"
+            manualindexfile="../manuals/806x.idx"
+            id="8065:LE:24:default">
+    <description>EEC-IV 8065 with ROM banks 0, 1, 8 and 9; address = bank * 0x10000 + 16-bit address</description>
+    <compiler name="default" spec="8065.cspec" id="default"/>
+  </language>
 </language_definitions>

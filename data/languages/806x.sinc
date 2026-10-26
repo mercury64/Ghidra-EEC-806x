@@ -1,24 +1,104 @@
+################################################################
+# Instruction set of the Intel 8061 and 8065, the CPUs of Ford EEC-IV controllers.
+#
+# The .slaspec that includes this file defines PROCESSOR as "8061" or "8065".
+#
+# 8061: one 16-bit address space. Registers 0x00-0xff, RAM up to 0x1fff, ROM from 0x2000.
+#
+# 8065: up to four 64 KiB banks, numbered 0, 1, 8 and 9. A Ghidra address is
+#       bank * 0x10000 + 16-bit address (20 bits, in a 24-bit space), so bank 8 address
+#       0x2075 is 0x82075. Addresses 0x0000-0x1fff (registers and RAM) are not banked:
+#       every bank uses the same bytes, at 0x00000-0x01fff.
+#       Banks:
+#       - Code runs in the bank of the current instruction. Jumps and calls stay in that
+#         bank unless a ROMBK prefix gives another bank.
+#       - Data at 0x2000 and above is read from the data bank, which is bits 0-3 of
+#         BANK_Select (register 0x11), unless a ROMBK prefix gives another bank.
+#       - ROMBK n (opcode 10, then a byte with the bank in bits 0-3) applies to the next
+#         instruction only.
+#       Registers: the register file is 0x000-0x3ff, four RAM banks of 256 bytes. A direct
+#       register operand is one byte. REGBK n (opcodes f4, f5, f6, fd) selects RAM bank n:
+#       byte operands and pointer registers are at n * 0x100 + byte. Word and long
+#       operands use the bank pair of n (banks 0-1 or 2-3); bit 0 of the operand byte
+#       selects the even or odd bank of the pair.
+#       Instructions with the fe prefix: signed multiply and divide (also on the 8061),
+#       and stack instructions that use the alternate stack pointer (register 0x22).
+#
+# Sources for the 8065 parts: the Ford EEC-IV Software Manual (sections 3-2.3 address
+# modes, 6-4 RAM banks, 6-14 memory expansion; instruction pages ROMBANK and BANKn), SAD
+# 4.13 (source/4.13/Core.cpp: opcind, opctbl, do_code, op_calc, calc_jump_ops, check_R11,
+# bka), SAD 6.01 (Core.cpp opctbl, command.cpp BANK_Select fields), SAD806x (SADDef.cs
+# registers and interrupt vectors) and the EEC-IV technical notes (eectch98, tables 9-12).
+################################################################
 
 define endian=little;
 
 define alignment=1;
 
+@if PROCESSOR == "8065"
+define space RAM      type=ram_space      size=3  wordsize=1 default;
+@else
 define space RAM      type=ram_space      size=2  wordsize=1 default;
+@endif
 define space register type=register_space size=1;
 
 ################################################################
 # Registers
 ################################################################
-define register offset=0 size=4 [ PSW ];
+define register offset=0x00 size=2 [ PSW ];
 
-define register offset=0 size=2 [ PC ];
+@if PROCESSOR == "8065"
+define register offset=0x04 size=3 [ PC ];
+@else
+define register offset=0x04 size=2 [ PC ];
+@endif
 
-define register offset=0x10 size=2 [ SP ];
+# Stack pointers used by the p-code. SP2 is the 8065 alternate stack pointer.
+define register offset=0x10 size=2 [ SP SP2 ];
 
-# Special function registers (SFR)
+define register offset=0x30 size=1 [ I Z N V VT C NZ CZ ST RB ];	# status bits; RB: register bank
+
+@if PROCESSOR == "8065"
+# Special function registers of the 8065. Names as in SAD 4.13 (Core.cpp defsyms).
 define RAM offset=0x00 size=1
 [
-	ZRlo        ZRhi 
+	ZRlo         ZRhi          LSO_Port      LIO_Port
+	AD_Low       AD_High       _             AD_Timed_Lo
+	INT_Mask     INT_Pend      IO_Status     HSI_Sample
+	HSI_Mask     HSI_Data      _             AD_Timed_Hi
+	_            BANK_Select   _             IO_Timer_Hi
+	_            LSSI_A        _             LSSI_B
+	_            LSSI_C        HSI_Mode      HSO_UsedCnt
+	_            LSSI_D        HSO_LastUsed  HSO_SlotSel
+];
+
+define RAM offset=0x00 size=2
+[
+	ZR           _             _             IO_Timer
+	_            _             _             HSI_Time
+	HSO_IntPend1 HSO_IntMask1  HSO_IntPend2  HSO_IntMask2
+	HSO_Status   _             HSO_TimeCnt   _
+	StackPtr     StackPtr2
+];
+
+@define INTMASK "INT_Mask"
+
+# Context:
+#   rombk_on, rombk_bank  set by ROMBK, for the next instruction only
+#   dbank                 data bank, from writes of a constant to BANK_Select
+#   rbank                 register bank, from REGBK
+define register offset=0x40 size=4 contextreg;
+define context contextreg
+	rombk_on   = (0,0) noflow
+	rombk_bank = (1,4) noflow
+	dbank      = (5,8)
+	rbank      = (9,10)
+;
+@else
+# Special function registers (SFR) of the 8061
+define RAM offset=0x00 size=1
+[
+	ZRlo        ZRhi
 	LSOPort		BiDirPort
 	AD_resultlo AD_resulthi
 	MstrIOTmrlo	MstrIOTmrhi
@@ -30,28 +110,28 @@ define RAM offset=0x00 size=1
 
 define RAM offset=0x00 size=2
 [
-	ZR  
-	BiDirection      
-	AD_result 
-	MasterIOtmr 
-	INTERRUPT 
-	INPUT   
-	HSI_Data    
-	HSI_Time 
+	ZR
+	BiDirection
+	AD_result
+	MasterIOtmr
+	INTERRUPT
+	INPUT
+	HSI_Data
+	HSI_Time
 ];
 
 # Stack pointer
 define RAM offset=0x10 size=1 [ StackPtrlo StackPtrhi];
 define RAM offset=0x10 size=2 [ STACK ];
 
-define register offset=0x30 size=1 [ I Z N V VT C NZ CZ ST ];	# status bits
+@define INTMASK "INT_MASK"
+@endif
 
 ################################################################
 # Tokens
 ################################################################
-# All instructions have a single-byte opcode except for a
-# handful of multiplication/division instructions which have
-# a two-byte op-code with the first byte as 'FE'
+# Most instructions have a one-byte opcode. Signed multiply and divide, and the 8065
+# alternate-stack instructions, have the prefix byte fe before the opcode.
 define token opbyte (8)
 	op8     = (0,7)
 	op6     = (2,7)
@@ -61,19 +141,18 @@ define token opbyte (8)
 	aa      = (0,1)
 	bitno   = (0,2)
 	highb   = (4,7)
-	imm8    = (0,7) signed # immediate
-	simm8   = (0,7) signed # immediate
+	imm8    = (0,7)         # immediate byte
+	simm8   = (0,7) signed  # signed byte: short index offset, relative jump
 	baop    = (0,7) # byte register
 	breg8   = (0,7) # byte register
-	dbreg8   = (0,7) # byte register
+	dbreg8  = (0,7) # byte register
 	waop    = (0,7) # word register
 	wreg8   = (0,7) # word register
-	dwreg16   = (0,7) # word register
-	lreg32    = (0,7) # long/double register
-	dlreg   = (0,7) # long/double register
-	imm7    = (1,7)
-	iwreg7  = (1,7)
-	addbit8 = (0,0)
+	dwreg16 = (0,7) # word register
+	lreg32  = (0,7) # long/double register
+	iwreg7  = (1,7) # pointer register number / 2
+	addbit8 = (0,0) # indirect: 1 = auto-increment; indexed: 1 = long index
+	romb    = (0,3) dec # bank number in the byte after a ROMBK opcode
 ;
 
 define token opword (16)
@@ -90,37 +169,143 @@ simmed8: simm8  is simm8 { export *[const]:1 simm8; }
 
 immed16: imm16  is imm16  { export *[const]:2 imm16; }
 
-# baop8: baop  is baop & baop=0 { export 0:1; }
-# baop8: baop  is baop & baop=1 { export 0:1; }
+################################################################
+# Register operands
+################################################################
+@if PROCESSOR == "8065"
+# Byte registers: register bank * 0x100 + byte.
+baop8: rb  is baop & rbank   [ rb = (rbank << 8) + baop; ]   { export *[RAM]:1 rb; }
+breg:  rb  is breg8 & rbank  [ rb = (rbank << 8) + breg8; ]  { export *[RAM]:1 rb; }
+dbreg: rb  is dbreg8 & rbank [ rb = (rbank << 8) + dbreg8; ] { export *[RAM]:1 rb; }
+
+# Word and long registers (word direct references): bit 1 of the register bank selects the
+# bank pair (0-1 or 2-3) and bit 0 of the operand byte selects the even or odd bank in the
+# pair (EEC-IV Software Manual 6-4.4). With REGBK 0 or 2 this is the same as SAD 4.13
+# op_calc. With REGBK 1 or 3 SAD puts an even byte in the selected (odd) bank instead.
+waop16: rw is waop & rbank
+	[ rw = ((rbank $and 2) << 8) + ((waop $and 1) << 8) + (waop $and 0xfe); ]
+	{ export *[RAM]:2 rw; }
+wreg:   rw is wreg8 & rbank
+	[ rw = ((rbank $and 2) << 8) + ((wreg8 $and 1) << 8) + (wreg8 $and 0xfe); ]
+	{ export *[RAM]:2 rw; }
+dwreg:  rw is dwreg16 & rbank
+	[ rw = ((rbank $and 2) << 8) + ((dwreg16 $and 1) << 8) + (dwreg16 $and 0xfe); ]
+	{ export *[RAM]:2 rw; }
+lreg:   rl is lreg32 & rbank
+	[ rl = ((rbank $and 2) << 8) + ((lreg32 $and 1) << 8) + (lreg32 $and 0xfe); ]
+	{ export *[RAM]:4 rl; }
+
+# Pointer register of an indirect or indexed operand: in the selected RAM bank
+# (EEC-IV Software Manual 6-4.3).
+ptrreg: rp is iwreg7 & rbank [ rp = (rbank << 8) + (iwreg7 << 1); ] { export *[RAM]:2 rp; }
+
+# Bank of a data address at 0x2000 or above, as an offset (bank * 0x10000).
+# (The operands that use dbo do not show it.)
+dbo: off is rombk_on=1 & rombk_bank [ off = rombk_bank << 16; ] { export *[const]:3 off; }
+dbo: off is rombk_on=0 & dbank      [ off = dbank << 16; ]      { export *[const]:3 off; }
+@else
 baop8: baop  is baop          { export *:1 baop; }
 
-# waop16: waop  is waop & waop=0 { export 0:2; }
 waop16: waop  is waop          { export *:2 waop; }
 
-# iwreg: iwreg7  is iwreg7 & iwreg7=0 { export 0:2; }
-iwreg: iwreg7  is iwreg7            { export iwreg7; }
-
-# breg: breg8  is breg8 & breg8=0 { export 0:1; }
-# breg: breg8  is breg8 & breg8=1 { export 0:1; }
 breg: breg8  is breg8           { export *:1 breg8; }
 
 dbreg: dbreg8 is dbreg8 		{ export *:1 dbreg8; }
 
-# wreg: wreg8  is wreg8 & wreg8=0 { export 0:2; }
 wreg: wreg8  is wreg8           { export *:2 wreg8; }
 
 dwreg: dwreg16  is dwreg16      { export *:2 dwreg16; }
 
 lreg: lreg32 is lreg32 { export *:4 lreg32; }
+@endif
 
+################################################################
+# Operands with an addressing mode (aa: 0 direct, 1 immediate, 2 indirect, 3 indexed)
+################################################################
 # See reference manual pp. 29-30 and note 1 on page 113
+@if PROCESSOR == "8065"
 # 1-byte operands
 oper8:   baop8                       is aa=0x0; baop8                       { export baop8; } #direct
 oper8:   "#"immed8                   is aa=0x1; immed8                      { export immed8; } #immediate
 
-oper8:   "["indirect_addr"]"                 is aa=0x2; iwreg7 & addbit8=0 [indirect_addr = iwreg7 << 1;] { 
+oper8:   "["ptrreg"]"                is aa=0x2; ptrreg & addbit8=0 & dbo {
+	local p:2 = ptrreg;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:1 ea;
+} #indirect
+
+oper8:   "["ptrreg"]+"               is aa=0x2; ptrreg & addbit8=1 & dbo {
+	local p:2 = ptrreg;
+	ptrreg = p + 1;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:1 ea;
+} #indirect+
+
+oper8:   simmed8"["ptrreg"]"         is aa=0x3; ptrreg & addbit8=0 & dbo; simmed8 {
+	local p:2 = ptrreg + sext(simmed8);
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:1 ea;
+} #indexed short
+
+oper8:   immed16"["ptrreg"]"         is aa=0x3; ptrreg & addbit8=1 & dbo; immed16 {
+	local p:2 = ptrreg + immed16;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:1 ea;
+} #indexed long
+
+# Indexed long with R0 (always 0) is an absolute address: ((a >> 13) + 7) >> 3 is 1 when
+# the address a is 0x2000 or above, else 0.
+oper8:   "["absaddr"]"               is aa=0x3; iwreg7=0 & addbit8=1 & rombk_on=1 & rombk_bank; imm16
+	[ absaddr = imm16 + ((((imm16 >> 13) + 7) >> 3) * (rombk_bank << 16)); ]
+	{ export *[RAM]:1 absaddr; }
+oper8:   "["absaddr"]"               is aa=0x3; iwreg7=0 & addbit8=1 & rombk_on=0 & dbank; imm16
+	[ absaddr = imm16 + ((((imm16 >> 13) + 7) >> 3) * (dbank << 16)); ]
+	{ export *[RAM]:1 absaddr; }
+
+# 2-byte operands
+oper16:  waop16                      is aa=0x0; waop16                      { export waop16; } #direct
+
+oper16:  "#"immed16                  is aa=0x1; immed16                     { export immed16; } #immediate
+
+oper16:  "["ptrreg"]"                is aa=0x2; ptrreg & addbit8=0 & dbo {
+	local p:2 = ptrreg;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:2 ea;
+} #indirect
+
+oper16:  "["ptrreg"]+"               is aa=0x2; ptrreg & addbit8=1 & dbo {
+	local p:2 = ptrreg;
+	ptrreg = p + 2;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:2 ea;
+} #indirect +
+
+oper16:  simmed8"["ptrreg"]"         is aa=0x3; ptrreg & addbit8=0 & dbo; simmed8 {
+	local p:2 = ptrreg + sext(simmed8);
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:2 ea;
+} #indexed short
+
+oper16:  immed16"["ptrreg"]"         is aa=0x3; ptrreg & addbit8=1 & dbo; immed16 {
+	local p:2 = ptrreg + immed16;
+	local ea:3 = zext(p) + zext(p >= 0x2000) * dbo;
+	export *[RAM]:2 ea;
+} #indexed long
+
+oper16:  "["absaddr"]"               is aa=0x3; iwreg7=0 & addbit8=1 & rombk_on=1 & rombk_bank; imm16
+	[ absaddr = imm16 + ((((imm16 >> 13) + 7) >> 3) * (rombk_bank << 16)); ]
+	{ export *[RAM]:2 absaddr; }
+oper16:  "["absaddr"]"               is aa=0x3; iwreg7=0 & addbit8=1 & rombk_on=0 & dbank; imm16
+	[ absaddr = imm16 + ((((imm16 >> 13) + 7) >> 3) * (dbank << 16)); ]
+	{ export *[RAM]:2 absaddr; }
+@else
+# 1-byte operands
+oper8:   baop8                       is aa=0x0; baop8                       { export baop8; } #direct
+oper8:   "#"immed8                   is aa=0x1; immed8                      { export immed8; } #immediate
+
+oper8:   "["indirect_addr"]"                 is aa=0x2; iwreg7 & addbit8=0 [indirect_addr = iwreg7 << 1;] {
 	local tmp:2 = *indirect_addr:2;
-	export *[RAM]:1 tmp; 
+	export *[RAM]:1 tmp;
 } #indirect
 
 oper8:   "["indirect_addr"]+"                is aa=0x2; iwreg7 & addbit8=1  [indirect_addr = iwreg7 << 1;] {
@@ -139,17 +324,20 @@ oper8:   immed16"["indirect_addr"]"  is aa=0x3; iwreg7 & addbit8=1; immed16 [ind
 	export *[RAM]:1 tmp;
 } #indexed long
 
+# Indexed long with R0 (always 0) is an absolute address.
+oper8:   "["imm16"]"                 is aa=0x3; iwreg7=0 & addbit8=1; imm16 { export *[RAM]:1 imm16; }
+
 # 2-byte operands
 oper16:  waop16                     is aa=0x0; waop16                      { export waop16; } #direct
 
 oper16:  "#"immed16                 is aa=0x1; immed16                     { export immed16; } #immediate
 
-oper16:  "["indirect_addr"]"        is aa=0x2; iwreg7 & addbit8=0 [indirect_addr = iwreg7 << 1;] { 
+oper16:  "["indirect_addr"]"        is aa=0x2; iwreg7 & addbit8=0 [indirect_addr = iwreg7 << 1;] {
 	local tmp:2 = *indirect_addr:2;
 	export *[RAM]:2 tmp;
 } #indirect
 
-oper16:  "["indirect_addr"]+"        is aa=0x2; iwreg7 & addbit8=1 [indirect_addr = iwreg7 << 1;] { 
+oper16:  "["indirect_addr"]+"        is aa=0x2; iwreg7 & addbit8=1 [indirect_addr = iwreg7 << 1;] {
 	local tmp:2 = *indirect_addr:2;
 	*indirect_addr:2 = tmp + 2;
 	export *[RAM]:2 tmp;
@@ -167,23 +355,82 @@ oper16:  immed16"["indirect_addr"]"  is aa=0x3 ; iwreg7 & addbit8=1; immed16 [in
 	export *[RAM]:2 tmp;
 } #indexed long
 
-# range -128 through +127
-jmpdest: reloc    is simm8 [ reloc = inst_next + simm8; ]                              { export *:1 reloc; }
+oper16:  "["imm16"]"                is aa=0x3; iwreg7=0 & addbit8=1; imm16 { export *[RAM]:2 imm16; }
+@endif
 
-# range -1023 through 1024
-jmpdest11: reloc  is jmp11_hi & jmp11_lo  [reloc = inst_next + ((jmp11_hi << 8) | jmp11_lo);]                                { export *:2 reloc; }
-jmpdest16: reloc  is disp16 [reloc = inst_next + disp16;] { export *:2 reloc; }
+################################################################
+# Jump and call destinations
+################################################################
+@if PROCESSOR == "8065"
+# The 16-bit target wraps inside the bank. The bank is the bank of the instruction, or
+# the bank of a ROMBK prefix (SAD 4.13 calc_jump_ops and codebank).
+@define CODEBANK "((rombk_on * (rombk_bank << 16)) + ((1 - rombk_on) * (inst_start $and 0xf0000)))"
+
+# range -128 through +127
+jmpdest: reloc    is simm8 & rombk_on & rombk_bank
+	[ reloc = ((inst_next + simm8) $and 0xffff) + $(CODEBANK); ]                  { export *:1 reloc; }
+
+# range -1024 through 1023
+jmpdest11: reloc  is jmp11_hi & jmp11_lo & rombk_on & rombk_bank
+	[ reloc = ((inst_next + ((jmp11_hi << 8) | jmp11_lo)) $and 0xffff) + $(CODEBANK); ] { export *:2 reloc; }
+
+jmpdest16: reloc  is disp16 & rombk_on & rombk_bank
+	[ reloc = ((inst_next + disp16) $and 0xffff) + $(CODEBANK); ]                 { export *:2 reloc; }
+
+# SKIP: the byte after the opcode is skipped.
+skipdest: reloc   is op8 [ reloc = ((inst_start + 2) $and 0xffff) + (inst_start $and 0xf0000); ] { export *:1 reloc; }
+
+# Bank of the return address of RET, RETI, RETA and RETIA, as an offset (bank * 0x10000):
+# the bank of a ROMBK prefix, else the bank of the instruction (EEC-IV Software Manual,
+# ROMBANK branch instructions).
+retbank: off      is rombk_on=1 & rombk_bank [ off = rombk_bank << 16; ]      { export *[const]:3 off; }
+retbank: off      is rombk_on=0 [ off = inst_start $and 0xf0000; ]            { export *[const]:3 off; }
+@else
+# range -128 through +127
+jmpdest: reloc    is simm8 [ reloc = (inst_next + simm8) $and 0xffff; ]                              { export *:1 reloc; }
+
+# range -1024 through 1023
+jmpdest11: reloc  is jmp11_hi & jmp11_lo  [reloc = (inst_next + ((jmp11_hi << 8) | jmp11_lo)) $and 0xffff;] { export *:2 reloc; }
+jmpdest16: reloc  is disp16 [reloc = (inst_next + disp16) $and 0xffff;] { export *:2 reloc; }
+
+# SKIP: the byte after the opcode is skipped.
+skipdest: reloc   is op8 [ reloc = (inst_start + 2) $and 0xffff; ] { export *:1 reloc; }
+@endif
 
 ################################################################
 # Pseudo Instructions
 ################################################################
-#define pcodeop blockMove;
-define pcodeop idlePowerdown;
 define pcodeop normalize;
 
 ################################################################
 # Macros
 ################################################################
+@if PROCESSOR == "8065"
+macro push(val) {
+	SP = SP - 2;
+	local a:3 = zext(SP);
+	*[RAM]:2 a = val;
+}
+
+macro pop(val) {
+	local a:3 = zext(SP);
+	val = *[RAM]:2 a;
+	SP = SP + 2;
+}
+
+# Alternate stack (8065 only)
+macro pusha(val) {
+	SP2 = SP2 - 2;
+	local a:3 = zext(SP2);
+	*[RAM]:2 a = val;
+}
+
+macro popa(val) {
+	local a:3 = zext(SP2);
+	val = *[RAM]:2 a;
+	SP2 = SP2 + 2;
+}
+@else
 macro push(val) {
 	SP = SP - 2;
 	*:2 SP = val;
@@ -193,6 +440,7 @@ macro pop(val) {
 	val = *:2 SP;
 	SP = SP + 2;
 }
+@endif
 
 macro resetFlags() {
 	PSW = 0x7f00;
@@ -205,20 +453,34 @@ macro resultFlags(res) {
 	V = 0;
 }
 
+# Additions, subtractions and compares set N to the sign of the true result, also when the
+# result overflows: N is the sign bit of the result exclusive-or V (EEC-IV Software Manual,
+# ADCB, AD2B, CMPB, SB2B, DECB, NEGB; Intel 8096 user manual, PSW: "It is correct even if an
+# overflow occurs"). JGE, JGT, JLE and JLT test N, so they compare signed values correctly.
 macro additionFlags(op1, op2, res) {
 	Z = (res == 0);
-	N = (res s< 0);
 	C = carry(op1, op2);
 	V = scarry(op1, op2);
+	N = (res s< 0) ^^ V;
 	VT = V| VT;
 }
 
 macro subtractFlags(op1, op2, res) {
-	N = (res s< 0);
 	Z = (res == 0);
 	C = (op1 < op2) == 0;
 	V = sborrow(op1, op2);
+	N = (res s< 0) ^^ V;
 	VT = VT | V;
+}
+
+# INC and INCB set N to the sign bit of the result (EEC-IV Software Manual, INCB and INCW: "One
+# if result is in the range of 80 to FF").
+macro incrementFlags(op1, res) {
+	Z = (res == 0);
+	N = (res s< 0);
+	C = carry(op1, 1);
+	V = scarry(op1, 1);
+	VT = V | VT;
 }
 
 macro stickyFlagW(source, shift) {
@@ -245,37 +507,22 @@ macro stickyFlagL(source, shift) {
 	ST = (result != 0);
 }
 
-macro blockMove(ptrs, cntreg) {
-	local tsptr:4 = (ptrs & 0xffff0000) >> 0x10;
-	local srcPtr:2 = tsptr(2);
-	local dstPtr:2 = ptrs(2);
-	local cnt = cntreg;
-	<loop>
-	local data:2 = *srcPtr;
-	*dstPtr = data;
-	srcPtr = srcPtr + 2;
-	dstPtr = dstPtr + 2;
-	cnt = cnt - 1;
-	if cnt != 0 goto <loop>;
-	ptrs = zext(dstPtr) | (zext(srcPtr) << 0x10);
-}
-
 macro setShiftLeftCarryFlag(shiftee,amount) {
 	shifting:1 = amount != 0;
 	local tmp = ((shiftee >> (16-amount)) & 1);
-	C= (shifting & tmp:1);
+	C = shifting & (tmp != 0);
 }
 
 macro setShiftRightCarryFlag(shiftee,amount) {
 	shifting:1 = amount != 0;
 	local tmp = (shiftee >> (amount-1)) & 1;
-	C = (shifting & tmp:1);
+	C = shifting & (tmp != 0);
 }
 
 macro setSignedShiftRightCarryFlag(shiftee,amount) {
 	shifting:1 = amount != 0;
 	local tmp = (shiftee s>> (amount-1)) & 1;
-	C= (shifting & tmp:1);
+	C = shifting & (tmp != 0);
 }
 
 ################################################################
@@ -348,18 +595,6 @@ macro setSignedShiftRightCarryFlag(shiftee,amount) {
 	resultFlags(dbreg);
 }
 
-#:SKR4 lreg, wreg                    is op8=0xc1; wreg ; lreg {
-#	blockMove(lreg, wreg);
-#}
-
-#:BMOVI lreg, wreg                   is op8=0xcd; wreg; lreg {
-#	blockMove(lreg, wreg);
-#}
-
-#:DJNZ [ wreg ]                        is op8=0xe3; wreg {
-##	goto [wreg];
-#}
-
 :CLRW wreg                           is op8=0x1; wreg {
 	wreg = 0;
 	Z = 1;
@@ -423,23 +658,22 @@ macro setSignedShiftRightCarryFlag(shiftee,amount) {
 	I = 0;
 }
 
+# Divide: the low half of the destination gets the quotient, the high half the remainder.
 :DIVU lreg, oper16                  is op6=0x23 ... & oper16; lreg {
-	local num = lreg;
-	local den = oper16;
-	local div = num / zext(den);
-	local rem = num % zext(den);
-	lreg = zext(div:2 << 16) | rem;
-	V = (div > 0xffff);
+	local den:4 = zext(oper16);
+	local quo:4 = lreg / den;
+	local rem:4 = lreg % den;
+	lreg = (rem << 16) | (quo & 0xffff);
+	V = (quo > 0xffff);
 	VT = VT | V;
 }
 
 :DIVUB wreg, oper8                  is op6=0x27 ... & oper8; wreg {
-	local num = wreg;
-	local den = oper8;
-	local div = num / zext(den);
-	local rem = num % zext(den);
-	wreg = zext(div:1 << 8) | rem;
-	V = (div > 0xff);
+	local den:2 = zext(oper8);
+	local quo:2 = wreg / den;
+	local rem:2 = wreg % den;
+	wreg = (rem << 8) | (quo & 0xff);
+	V = (quo > 0xff);
 	VT = VT | V;
 }
 
@@ -448,54 +682,31 @@ macro setSignedShiftRightCarryFlag(shiftee,amount) {
 	if (breg != 0) goto jmpdest;
 }
 
-@if defined(C196KB) || defined(C196KC)
-:DJNZW wreg, jmpdest                is op8=0xe1; wreg; jmpdest {
-	wreg = wreg - 1;
-	if (wreg != 0) goto jmpdest;
-}
-
-@endif
-
 :EI                                 is op8=0xfb {
 	I = 1;
 }
 
 :EXT lreg                           is op8=0x6; lreg {
-	tmp:4 = lreg & 0xffff;
-	lreg = sext(tmp);
+	lreg = sext(lreg:2);
 	resultFlags(lreg);
 }
 
 :EXTB wreg                          is op8=0x16; wreg {
-	tmp:2 = wreg & 0xff;
-	wreg = sext(tmp);
+	wreg = sext(wreg:1);
 	resultFlags(wreg);
 }
 
 :INC wreg                           is op8=0x7; wreg {
 	local tmp = wreg + 1;
-	additionFlags(wreg, 1, tmp);
+	incrementFlags(wreg, tmp);
 	wreg = tmp;
 }
 
 :INCB breg                          is op8=0x17; breg {
 	local tmp:1 = breg + 1;
-	additionFlags(breg, 1, tmp);
+	incrementFlags(breg, tmp);
 	breg = breg + 1;
 }
-
-@if defined(C196KB) || defined(C196KC)
-:IDLPD "#"immed8                    is op8=0xf6; immed8 {
-	idlePowerdown();
-	Z = 0;
-	N = 0;
-	C = 0;
-	V = 0;
-	VT = 0;
-	ST = 0;
-}
-
-@endif
 
 :JBC breg, bitno, jmpdest           is op5=0x6 & bitno; breg; jmpdest {
 	local bit = (breg >> bitno) & 0x1;
@@ -532,7 +743,7 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	ret:2 = inst_next;
 	push(ret);
 	call jmpdest16;
-} 
+}
 
 :LDW wreg, oper16                    is op6=0x28 ... & oper16; wreg {
 	wreg = oper16;
@@ -541,6 +752,17 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 :LDB breg, oper8                    is op6=0x2c ... & oper8; breg {
 	breg = oper8;
 }
+
+@if PROCESSOR == "8065"
+# A constant written to BANK_Select sets the data bank (bits 0-3) for the code that
+# follows (SAD 4.13 check_R11; SAD 6.01 command.cpp: Data_Bank = bits 0-3,
+# Stack_Bank = bits 4-7).
+:LDB breg, "#"imm8                  is op8=0xb1; imm8; breg & breg8=0x11 & rbank=0
+	[ dbank = imm8 $and 0xf; globalset(inst_next, dbank); ]
+{
+	breg = imm8;
+}
+@endif
 
 :LDBSE wreg, oper8                  is op6=0x2f ... & oper8; wreg {
 	wreg = sext(oper8);
@@ -601,9 +823,8 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 }
 
 :NOP                                is op8=0xff {
-	#resetFlags();
-	#PC = 0x2080;
-	#goto [PC];
+	local unused:1 = 0;    # no operation; a dead copy, so that SLEIGH does not warn
+	unused = unused;
 }
 
 :NORML lreg, breg                   is op8=0xf; breg; lreg {
@@ -633,22 +854,24 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	resultFlags(breg);
 }
 
-:POPW oper16                         is op6=0x33 ... & oper16 {
+# POPW has no immediate form (opcode cd is not used).
+:POPW oper16                         is (op6=0x33 & aa!=0x1) ... & oper16 {
 	local result:2 = 0;
 	pop(result);
 	oper16 = result;
 }
 
+# push and pop move 16-bit words: the flags in the low byte, the interrupt mask in the
+# high byte.
 :POPP                               is op8=0xf3 {
-	local result:4 = 0;
+	local result:2 = 0;
 	pop(result);
-	PSW = result:2;
-	local resultHi = result >> 8;
-	INT_MASK = resultHi:1;
+	PSW = result & 0xff;
+	$(INTMASK) = result(1);
 }
 
 :PUSHP                              is op8=0xf2 {
-	val:4 = (zext(INT_MASK) << 8) | zext(PSW);
+	local val:2 = (zext($(INTMASK)) << 8) | (PSW & 0xff);
 	push(val);
 	resetFlags();
 }
@@ -658,6 +881,24 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	push(val);
 }
 
+@if PROCESSOR == "8065"
+:RET                                is op8=0xf0 & retbank {
+	local retDest:2 = 0;
+	pop(retDest);
+	local dest:3 = zext(retDest) + retbank;
+	return [dest];
+}
+
+# On the 8065 this is RETEI: it also enables interrupts again (EEC-IV Software Manual,
+# chapter 2, instruction set).
+:RETI                               is op8=0xf1 & retbank {
+	local retDest:2 = 0;
+	pop(retDest);
+	I = 1;
+	local dest:3 = zext(retDest) + retbank;
+	return [dest];
+}
+@else
 :RET                                is op8=0xf0 {
 	local retDest:2 = 0;
 	pop(retDest);
@@ -669,6 +910,7 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	pop(retDest);
 	return [retDest];
 }
+@endif
 
 :SCALL jmpdest11                    is op16=0x5 & jmpdest11 {
 	ret:2 = inst_next;
@@ -891,24 +1133,23 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	stickyFlagL(source, shift);
 }
 
-:SIGNDS 		                  is op8=0xfe {
-
-}
-
 :SJMP jmpdest11                     is op16=0x4 & jmpdest11 {
 	goto jmpdest11;
 }
 
-:SKIP                               is op8=0x00 {
-	local tmp:1 = 0;
-	tmp = tmp; # avoid warning
-} #2-byte NOP
+# SKIP is a 2-byte no-operation: the CPU skips the byte after the opcode. It is decoded
+# as a 1-byte jump over that byte, as SAD does, because code can also jump to the
+# skipped byte and run it as an instruction.
+:SKIP                               is op8=0x00 & skipdest {
+	goto skipdest;
+}
 
-:STW wreg, oper16                    is op6=0x30 ... & oper16; wreg {
+# STW and STB have no immediate form (opcodes c1 and c5 are not used).
+:STW wreg, oper16                    is (op6=0x30 & aa!=0x1) ... & oper16; wreg {
 	oper16 = wreg;
 }
 
-:STB breg, oper8                    is op6=0x31 ... & oper8; breg {
+:STB breg, oper8                    is (op6=0x31 & aa!=0x1) ... & oper8; breg {
 	oper8 = breg;
 }
 
@@ -929,6 +1170,7 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 :SB2B breg, oper8                   is op6=0x1e ... & oper8; breg {
 	local tmp = breg - oper8;
 	subtractFlags(breg, oper8, tmp);
+	breg = tmp;
 }
 
 :SB3B dbreg, breg, oper8            is op6=0x16 ... & oper8; breg; dbreg {
@@ -945,20 +1187,12 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 }
 
 :SBBB breg, oper8                  is op6=0x2e ... & oper8; breg {
-	local tmp = breg - oper8 - zext(1 - C);
+	local tmp = breg - oper8 - (1 - C);
 	local oldz = Z;
-	subtractFlags(breg, oper8-zext(1-C), tmp);
+	subtractFlags(breg, oper8-(1-C), tmp);
 	breg = tmp;
 	Z = oldz & Z;
 }
-
-#:INT                               is op8=0xf7 {
-#	ret:2 = inst_next;
-#	push(ret);
-	#trapv:2 = 0x2010;
-	#PC = *trapv;
-	#goto [PC];
-#}
 
 :XOR wreg, oper16                   is op6=0x21 ... & oper16; wreg {
 	tmpD:2 = wreg;
@@ -968,59 +1202,6 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	resultFlags(wreg);
 }
 
-@if defined(8065)
-:SKR4 wreg, waop16                   is op8=0x04; waop16; wreg {
-	local tmp = wreg;
-	wreg = waop16;
-	waop16 = tmp;
-}
-
-:SKRC wreg, immed8", TABLE["iwreg"]" is op8=0x0b; iwreg & addbit8=0; immed8; wreg {
-	local tmp = iwreg;
-	tmp = tmp + sext(immed8);
-	local val = *[RAM]:2 tmp;
-
-	local wreg_tmp = wreg;
-	wreg = val;
-	*[RAM]:2 tmp = wreg_tmp;
-}
-
-:SKRC wreg, immed16", TABLE["iwreg"]"  is op8=0x0b; iwreg & addbit8=1; immed16; wreg {
-	local tmp = iwreg;
-	tmp = tmp + immed16;
-	local val = *[RAM]:2 tmp;
-
-	local wreg_tmp = wreg;
-	wreg = val;
-	*[RAM]:2 tmp = wreg_tmp;
-}
-
-@endif
-
-@if defined(8065)
-
-:XCHB breg, immed8", TABLE["iwreg"]"  is op8=0x1b ; iwreg & addbit8=0; immed8; breg {
-	local tmp = iwreg;
-	tmp = tmp + sext(immed8);
-	local val = *[RAM]:1 tmp;
-
-	local wreg_tmp = breg;
-	breg = val;
-	*[RAM]:1 tmp = wreg_tmp;
-}
-
-:SKRB breg, immed16", TABLE["iwreg"]"  is op8=0x1b ; iwreg & addbit8=1; immed16; breg {
-	local tmp = iwreg;
-	tmp = tmp + sext(immed16);
-	local val = *[RAM]:1 tmp;
-
-	local wreg_tmp = breg;
-	breg = val;
-	*[RAM]:1 tmp = wreg_tmp;
-}
-
-@endif
-
 :XORB breg, oper8                   is op6=0x25 ... & oper8; breg {
 	tmpD:1 = breg;
 	tmpS:1 = oper8;
@@ -1029,5 +1210,121 @@ cc: "E"    is cond=15 { tmp:1 = (Z == 1); export tmp; }
 	resultFlags(breg);
 }
 
+################################################################
+# Signed multiply and divide: the prefix fe before ML2W, ML3W, ML2B, ML3B, DIVU, DIVUB.
+# Mnemonics as in SAD.
+################################################################
+:SML2W lreg, oper16                 is op8=0xfe; op6=0x1b ... & oper16; lreg {
+	local a:4 = sext(lreg:2);
+	local b:4 = sext(oper16);
+	lreg = a * b;
+}
 
+:SML3W lreg, wreg, oper16           is op8=0xfe; op6=0x13 ... & oper16; wreg; lreg {
+	local a:4 = sext(wreg);
+	local b:4 = sext(oper16);
+	lreg = a * b;
+}
 
+:SML2B wreg, oper8                  is op8=0xfe; op6=0x1f ... & oper8; wreg {
+	local a:2 = sext(wreg:1);
+	local b:2 = sext(oper8);
+	wreg = a * b;
+}
+
+:SML3B wreg, breg, oper8            is op8=0xfe; op6=0x17 ... & oper8; breg; wreg {
+	local a:2 = sext(breg);
+	local b:2 = sext(oper8);
+	wreg = a * b;
+}
+
+:SDIVW lreg, oper16                 is op8=0xfe; op6=0x23 ... & oper16; lreg {
+	local den:4 = sext(oper16);
+	local quo:4 = lreg s/ den;
+	local rem:4 = lreg s% den;
+	lreg = (rem << 16) | (quo & 0xffff);
+	V = (quo s> 0x7fff) | (quo s< -0x8000);
+	VT = VT | V;
+}
+
+:SDIVB wreg, oper8                  is op8=0xfe; op6=0x27 ... & oper8; wreg {
+	local den:2 = sext(oper8);
+	local quo:2 = wreg s/ den;
+	local rem:2 = wreg s% den;
+	wreg = (rem << 8) | (quo & 0xff);
+	V = (quo s> 0x7f) | (quo s< -0x80);
+	VT = VT | V;
+}
+
+@if PROCESSOR == "8065"
+################################################################
+# 8065 only
+################################################################
+# ROMBK n: the next instruction uses bank n for its data address, or for its jump or call
+# target. Shown as a separate instruction, as SAD does.
+:ROMBK romb                         is op8=0x10; romb
+	[ rombk_on = 1; rombk_bank = romb; globalset(inst_next, rombk_on); globalset(inst_next, rombk_bank); ]
+{
+	local unused:1 = romb;    # no operation of its own; a dead copy, so that SLEIGH does not warn
+	unused = unused;
+}
+
+# REGBK n: direct register operands use register bank n (n * 0x100).
+:REGBK "0"                          is op8=0xf4 [ rbank = 0; globalset(inst_next, rbank); ] { RB = 0; }
+:REGBK "1"                          is op8=0xf5 [ rbank = 1; globalset(inst_next, rbank); ] { RB = 1; }
+:REGBK "2"                          is op8=0xf6 [ rbank = 2; globalset(inst_next, rbank); ] { RB = 2; }
+:REGBK "3"                          is op8=0xfd [ rbank = 3; globalset(inst_next, rbank); ] { RB = 3; }
+
+# Instructions that use the alternate stack pointer (register 0x22): the prefix fe before
+# PUSHW, POPW, LCALL, SCALL, RET, RETI, PUSHP, POPP. Mnemonics as in SAD.
+:PUSHA oper16                       is op8=0xfe; op6=0x32 ... & oper16 {
+	val:2 = oper16;
+	pusha(val);
+}
+
+:POPA oper16                        is op8=0xfe; (op6=0x33 & aa!=0x1) ... & oper16 {
+	local result:2 = 0;
+	popa(result);
+	oper16 = result;
+}
+
+:CALLA jmpdest16                    is op8=0xfe; op8=0xef; jmpdest16 {
+	ret:2 = inst_next;
+	pusha(ret);
+	call jmpdest16;
+}
+
+:SCLLA jmpdest11                    is op8=0xfe; op16=0x5 & jmpdest11 {
+	ret:2 = inst_next;
+	pusha(ret);
+	call jmpdest11;
+}
+
+:RETA                               is op8=0xfe & retbank; op8=0xf0 {
+	local retDest:2 = 0;
+	popa(retDest);
+	local dest:3 = zext(retDest) + retbank;
+	return [dest];
+}
+
+:RETIA                              is op8=0xfe & retbank; op8=0xf1 {
+	local retDest:2 = 0;
+	popa(retDest);
+	I = 1;
+	local dest:3 = zext(retDest) + retbank;
+	return [dest];
+}
+
+:PSHPA                              is op8=0xfe; op8=0xf2 {
+	local val:2 = (zext($(INTMASK)) << 8) | (PSW & 0xff);
+	pusha(val);
+	resetFlags();
+}
+
+:POPPA                              is op8=0xfe; op8=0xf3 {
+	local result:2 = 0;
+	popa(result);
+	PSW = result & 0xff;
+	$(INTMASK) = result(1);
+}
+@endif

@@ -1,8 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 
+<!-- Compiler specification for the 8065 language (8065:LE:24:default).
+     EEC-IV code has no standard calling convention: this only gives the decompiler a
+     stack pointer and a return address. -->
 <compiler_spec>
   <global>
-    <range space="ROM"/>
+    <range space="RAM"/>
   </global>
   <stackpointer register="SP" space="RAM" growth="negative"/>
   <returnaddress>
@@ -16,9 +19,6 @@
          </pentry>
       </input>
       <output>
-        <pentry minsize="1" maxsize="2">
-          <register name="STACK"/>
-        </pentry>
       </output>
       <unaffected>
         <register name="SP"/>
